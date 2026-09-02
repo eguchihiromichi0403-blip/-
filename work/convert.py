@@ -1,129 +1,143 @@
 # -*- coding: utf-8 -*-
-"""令和08年シート → 工事台帳インポートCSV 変換"""
-import openpyxl, datetime, csv, sys, unicodedata, re
+"""工事一覧Excel → ひな型準拠の工事台帳インポートCSV
 
-SRC = 'work/source.xlsx'
-SHEET = '令和08年 '
-TODAY = datetime.date(2026, 9, 2)
-EPOCH = datetime.date(1899, 12, 30)
+対象: 6月決算のため 工期終了が 2026/07/01 以降の工事のみ
+      （完了日が未定の工事＝進行中・受注・見積 も当期以降完成として含める）
+"""
+import openpyxl, datetime, csv, re, unicodedata
+
+SRC        = 'work/source.xlsx'
+SHEETS     = ['令和08年 ', '令和07年']
+OUT        = 'koji_daicho_2026.csv'
+NOTES      = 'work/conversion_notes.txt'
+TODAY      = datetime.date(2026, 9, 2)     # 状態の判定基準日
+PERIOD_FROM = datetime.date(2026, 7, 1)    # 当期首（6月決算）
+EPOCH      = datetime.date(1899, 12, 30)
 
 HEADER = ['工事番号','現場名','得意先名','得意先コード','工期開始','工期終了','請負金額',
           '前期末未成工事支出金（材料費）','前期末未成工事支出金（労務費）',
           '前期末未成工事支出金（外注費）','前期末未成工事支出金（経費）','状態','既定の原価区分']
 
-# 元請け名称の表記ゆれ統一（明らかな大小文字・全半角違いのみ）
-CUSTOMER_ALIAS = {'k2': 'K2', 'ｋ２': 'K2'}
+# シートごとの列位置（0始まり）: 元請け, 現場名, 着工日, 工事期間, 完了日, 請負金額, 材料金額, 外注費列
+LAYOUT = {
+    '令和08年 ': dict(cust=0, site=1, start=2, dur=3, end=4, amount=6, material=9,
+                     subcon=(11, 13, 15, 17, 19, 21)),
+    '令和07年':  dict(cust=0, site=2, start=3, dur=4, end=5, amount=7, material=None,
+                     subcon=(9,)),
+}
+
+CUSTOMER_ALIAS = {'k2': 'K2', 'ｋ２': 'K2'}   # 大小文字・全半角の表記ゆれのみ統一
 
 def norm_site(v):
-    """現場名は原文を尊重し、前後の空白と連続空白の整理のみ"""
-    if v is None: return ''
-    return re.sub(r'[\s\u3000]+', ' ', str(v)).strip()
+    """現場名は原文を尊重し、前後・連続空白の整理のみ"""
+    return re.sub(r'[\s　]+', ' ', str(v)).strip() if v is not None else ''
 
-def norm_name(v):
+def norm_customer(v):
     if v is None: return ''
-    s = unicodedata.normalize('NFKC', str(v)).strip()
-    s = re.sub(r'[\s　]+', ' ', s)
+    s = re.sub(r'[\s　]+', ' ', unicodedata.normalize('NFKC', str(v))).strip()
     return CUSTOMER_ALIAS.get(s, CUSTOMER_ALIAS.get(s.lower(), s))
 
 def to_date(v):
     if isinstance(v, datetime.datetime): return v.date()
-    if isinstance(v, datetime.date): return v
+    if isinstance(v, datetime.date):     return v
     if isinstance(v, (int, float)) and 30000 < v < 60000:
         return EPOCH + datetime.timedelta(days=int(v))
     return None
 
 def to_int(v):
     if isinstance(v, bool): return None
-    if isinstance(v, (int, float)): return int(round(v))
-    return None
+    return int(round(v)) if isinstance(v, (int, float)) else None
 
 def duration_days(v):
     if v is None: return None
-    s = unicodedata.normalize('NFKC', str(v))
-    m = re.search(r'(\d+)', s)
+    m = re.search(r'(\d+)', unicodedata.normalize('NFKC', str(v)))
     return int(m.group(1)) if m else None
 
 def add_year(dt):
-    try: return dt.replace(year=dt.year + 1)
+    try:    return dt.replace(year=dt.year + 1)
     except ValueError: return dt.replace(year=dt.year + 1, day=28)
 
 def ym(dt):
     return f'{dt.year}/{dt.month:02d}' if dt else ''
 
-def convert(seed_costs: bool):
+def extract():
+    """全シートから工事を抽出し、日付の破損を補正して返す"""
     wb = openpyxl.load_workbook(SRC, data_only=True)
-    ws = wb[SHEET]
-    out, notes = [], []
-    seq = 0
-    for i, r in enumerate(ws.iter_rows(values_only=True)):
-        if i == 0 or not any(c is not None and str(c).strip() for c in r):
-            continue
-        site = norm_site(r[1])
-        if not site:
-            continue
-        seq += 1
-        no = f'2026-{seq:03d}'
-        cust = norm_name(r[0])
+    items = []
+    for sheet in SHEETS:
+        L = LAYOUT[sheet]
+        for i, r in enumerate(wb[sheet].iter_rows(values_only=True)):
+            if i == 0 or not any(c is not None and str(c).strip() for c in r):
+                continue
+            site = norm_site(r[L['site']])
+            if not site:
+                continue
+            label = f'{sheet.strip()} {i + 1}行目「{site}」'
+            memo = []
+            start, end = to_date(r[L['start']]), to_date(r[L['end']])
+            raw_end = r[L['end']]
+            dur = duration_days(r[L['dur']])
 
-        start, end = to_date(r[2]), to_date(r[4])
-        if r[4] is not None and end is None:
-            notes.append(f'{no} {site}: 完了日「{r[4]}」を解釈できないため、着工日＋工事期間から補完')
-        if start and end and end < start:
-            if (start - end).days > 300:           # 年の入力ミス（1年前になっている）
-                fixed = add_year(end)
-            else:                                  # 日付の打ち間違い → 着工日＋工事期間で補完
-                dur = duration_days(r[3])
-                fixed = start + datetime.timedelta(days=dur) if dur is not None else start
-            notes.append(f'{no} {site}: 完了日 {end} が着工日より前 → {fixed} に補正')
-            end = fixed
-        if start and end is None:                  # 完了日欠落は 着工日＋工事期間 で補完
-            dur = duration_days(r[3])
-            if dur is not None:
+            if raw_end is not None and end is None:
+                memo.append('完了日「%s」を解釈できないため、着工日＋工事期間から補完' % raw_end)
+            if start and end and end < start:
+                if (start - end).days > 300:      # 年の入力ミス（1年前になっている）
+                    end = add_year(end)
+                else:                             # 日付の打ち間違い
+                    end = start + datetime.timedelta(days=dur) if dur is not None else start
+                memo.append(f'完了日 {to_date(raw_end)} が着工日より前 → {end} に補正')
+            if start and end is None and dur is not None:
                 end = start + datetime.timedelta(days=dur)
 
-        amount = to_int(r[6])
-        if r[6] is not None and amount is None:
-            notes.append(f'{no} {site}: 請負金額が数値でないため空欄（元の値「{r[6]}」）')
+            amount = to_int(r[L['amount']])
+            if r[L['amount']] is not None and amount is None:
+                memo.append(f'請負金額が数値でないため空欄（元の値「{r[L["amount"]]}」）')
 
-        material = to_int(r[9]) or 0
-        subcon = sum(to_int(r[c]) or 0 for c in (11, 13, 15, 17, 19, 21))
+            material = (to_int(r[L['material']]) or 0) if L['material'] is not None else 0
+            subcon = sum(to_int(r[c]) or 0 for c in L['subcon'])
 
-        if start is None:
-            status = '見積'
-        elif start > TODAY:
-            status = '受注'
-        elif end and end <= TODAY:
-            status = '完成'
-        else:
-            status = '進行中'
+            items.append(dict(sheet=sheet, label=label, site=site,
+                              cust=norm_customer(r[L['cust']]), start=start, end=end,
+                              amount=amount, material=material, subcon=subcon, memo=memo))
+    return items
 
-        if subcon >= material and subcon > 0: cost_type = '外注費'
-        elif material > 0:                    cost_type = '材料費'
-        else:                                 cost_type = ''
+def build():
+    items = extract()
+    rows, notes = [], []
+    for it in items:
+        if it['end'] is not None and it['end'] < PERIOD_FROM:
+            continue                              # 前期以前に完成 → 当期の台帳の対象外
+        if it['end'] is None:
+            it['memo'].append('完了日が未定のため当期の工事として取り込み')
+        notes += [f'{it["label"]}: {m}' for m in it['memo']]
 
-        # 前期末未成工事支出金：未完成工事のみ既発生原価を期首残高として設定
-        if seed_costs and status in ('進行中', '受注'):
-            wip_mat, wip_sub = (material or ''), (subcon or '')
-        else:
-            wip_mat, wip_sub = '', ''
+        start, end = it['start'], it['end']
+        if start is None:                status = '見積'
+        elif start > TODAY:              status = '受注'
+        elif end and end <= TODAY:       status = '完成'
+        else:                            status = '進行中'
 
-        out.append([no, site, cust, '', ym(start), ym(end),
-                    amount if amount is not None else '',
-                    wip_mat, '', wip_sub, '', status, cost_type])
-    return HEADER, out, notes
+        if it['subcon'] >= it['material'] and it['subcon'] > 0: cost_type = '外注費'
+        elif it['material'] > 0:                                cost_type = '材料費'
+        else:                                                   cost_type = ''
 
-def write_csv(path, header, rows):
-    with open(path, 'w', encoding='utf-8-sig', newline='') as f:
-        w = csv.writer(f, lineterminator='\r\n')
-        w.writerow(header)
-        w.writerows(rows)
+        rows.append([None, it['site'], it['cust'], '', ym(start), ym(end),
+                     it['amount'] if it['amount'] is not None else '',
+                     '', '', '', '',            # 前期末未成工事支出金は全件空欄
+                     status, cost_type])
+
+    rows.sort(key=lambda x: (x[4] == '', x[4], x[5]))   # 工期開始順、未定は末尾
+    for n, row in enumerate(rows, 1):
+        row[0] = f'2026-{n:03d}'
+    return rows, notes
 
 if __name__ == '__main__':
-    for seed, path in ((False, 'koji_daicho_2026.csv'), (True, 'koji_daicho_2026_原価区分期首残高あり.csv')):
-        h, rows, notes = convert(seed)
-        write_csv(path, h, rows)
-        print(f'{path}: {len(rows)}件')
-    with open('work/conversion_notes.txt', 'w', encoding='utf-8') as f:
+    rows, notes = build()
+    with open(OUT, 'w', encoding='utf-8-sig', newline='') as f:
+        w = csv.writer(f, lineterminator='\r\n')
+        w.writerow(HEADER)
+        w.writerows(rows)
+    with open(NOTES, 'w', encoding='utf-8') as f:
         f.write('\n'.join(notes) + '\n')
-    print('--- 補正・注意 ---')
+    print(f'{OUT}: {len(rows)}件')
     print('\n'.join(notes))
