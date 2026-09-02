@@ -57,6 +57,10 @@ def add_year(dt):
     try:    return dt.replace(year=dt.year + 1)
     except ValueError: return dt.replace(year=dt.year + 1, day=28)
 
+def add_months(dt, n):
+    total = dt.month - 1 + n
+    return datetime.date(dt.year + total // 12, total % 12 + 1, 1)
+
 def ym(dt):
     return f'{dt.year}/{dt.month:02d}' if dt else ''
 
@@ -121,7 +125,13 @@ def build():
         elif it['material'] > 0:                                cost_type = '材料費'
         else:                                                   cost_type = ''
 
-        rows.append([None, it['site'], it['cust'], '', ym(start), ym(end),
+        # 工期終了が未定なら工期開始の2か月後を仮置き（状態・抽出条件の判定には使わない）
+        end_out = end
+        if end_out is None and start is not None:
+            end_out = add_months(start, 2)
+            notes.append(f'{it["label"]}: 工期終了が未定のため工期開始の2か月後 {ym(end_out)} を仮置き')
+
+        rows.append([None, it['site'], it['cust'], '', ym(start), ym(end_out),
                      it['amount'] if it['amount'] is not None else '',
                      '', '', '', '',            # 前期末未成工事支出金は全件空欄
                      status, cost_type])
