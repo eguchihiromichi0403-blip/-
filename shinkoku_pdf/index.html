@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>申告書PDF結合</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --text: #1f2328; --muted: #6a737d; --line: #d8dde3;
+    --accent: #2563eb; --accent-weak: #e8efff; --ok: #15803d; --warn: #b45309; --warn-weak: #fff6e5;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: "Hiragino Sans", "Yu Gothic UI", "Meiryo", system-ui, sans-serif; font-size: 15px;
+  }
+  main { max-width: 860px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .lead { color: var(--muted); margin: 0 0 20px; font-size: 14px; }
+  .drop {
+    display: block; border: 2px dashed var(--line); border-radius: 10px; background: var(--card);
+    padding: 28px 16px; text-align: center; cursor: pointer; transition: .15s;
+  }
+  .drop.over { border-color: var(--accent); background: var(--accent-weak); }
+  .drop strong { display: block; font-size: 16px; margin-bottom: 6px; }
+  .drop span { color: var(--muted); font-size: 13px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; margin-top: 20px; }
+  .card h2 { font-size: 15px; margin: 0; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  ol.slots { list-style: none; margin: 0; padding: 0; }
+  .slot { display: flex; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line); align-items: flex-start; }
+  .slot:last-child { border-bottom: 0; }
+  .slot .no {
+    flex: none; width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: #fff;
+    display: grid; place-items: center; font-size: 12px; margin-top: 2px;
+  }
+  .slot.empty .no { background: var(--line); color: var(--muted); }
+  .slot .body { flex: 1; min-width: 0; }
+  .slot .label { font-weight: 600; }
+  .slot.empty .label { color: var(--muted); font-weight: normal; }
+  .skip { color: var(--muted); font-size: 13px; margin-left: 6px; }
+  .file { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; margin-top: 6px; font-size: 13px; }
+  .file .name { flex: 1 1 240px; min-width: 0; overflow-wrap: anywhere; }
+  .file .meta { color: var(--muted); white-space: nowrap; }
+  .file select { font-size: 13px; padding: 3px 4px; max-width: 100%; }
+  .file button, .actions button {
+    font: inherit; border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 2px 8px; cursor: pointer;
+  }
+  .file button:disabled { opacity: .35; cursor: default; }
+  .unclassified { background: var(--warn-weak); }
+  .unclassified h2 { color: var(--warn); }
+  .unclassified .file { padding: 0 16px 10px; }
+  .unclassified p { margin: 10px 16px; font-size: 13px; color: var(--warn); }
+  .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 20px; }
+  .actions input { flex: 1 1 260px; font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; }
+  .actions .primary { background: var(--accent); color: #fff; border-color: var(--accent); padding: 8px 18px; font-weight: 600; }
+  .actions .primary:disabled { opacity: .45; cursor: default; }
+  .actions button { padding: 8px 14px; }
+  #status { margin-top: 12px; font-size: 14px; min-height: 1.4em; }
+  #status.error { color: #b91c1c; }
+  #status.ok { color: var(--ok); }
+  .note { margin-top: 28px; font-size: 12px; color: var(--muted); line-height: 1.7; }
+</style>
+</head>
+<body>
+<main>
+  <h1>申告書PDF結合</h1>
+  <p class="lead">申告ソフトから書き出したPDFをまとめて追加すると、書類の種類を判別して決まった順番で1つのPDFに結合します。</p>
+
+  <label class="drop" id="drop">
+    <strong>ここにPDFをドラッグ＆ドロップ</strong>
+    <span>またはクリックしてファイルを選択（複数可・あとから追加も可）</span>
+    <input type="file" id="picker" accept="application/pdf,.pdf" multiple hidden>
+  </label>
+
+  <section class="card unclassified" id="unclassifiedCard" hidden>
+    <h2>判別できなかったファイル</h2>
+    <p>種類を選ぶと結合の対象になります。選ばないままのファイルは結合しません。</p>
+    <div id="unclassified"></div>
+  </section>
+
+  <section class="card">
+    <h2>結合する順番</h2>
+    <ol class="slots" id="slots"></ol>
+  </section>
+
+  <div class="actions">
+    <input type="text" id="outName" placeholder="保存するファイル名" aria-label="保存するファイル名">
+    <button class="primary" id="merge" disabled>結合してダウンロード</button>
+    <button id="clear">すべてクリア</button>
+  </div>
+  <div id="status" role="status"></div>
+
+  <p class="note">
+    PDFはこのパソコンのブラウザの中だけで処理され、外部には送信されません。<br>
+    判別は1ページ目の文字（様式名など）で行い、読み取れないときはファイル名で判別します。結果が違うときはプルダウンで直してください。
+  </p>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+const PDFJS_BASE = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/";
+pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_BASE + "pdf.worker.min.js";
+
+// 結合する順番
+const CATEGORIES = [
+  { id: "jushin",   label: "法人税受信通知" },
+  { id: "dairi",    label: "税務代理権限証書" },
+  { id: "shohi",    label: "消費税申告書" },
+  { id: "hojin",    label: "法人税申告書" },
+  { id: "chiho",    label: "地方税申告書" },
+  { id: "gaikyo",   label: "法人事業概況書" },
+  { id: "uchiwake", label: "勘定科目内訳書" },
+  { id: "kessan",   label: "決算報告書" },
+  { id: "genka",    label: "減価償却計算書" },
+];
+const LABEL = Object.fromEntries(CATEGORIES.map(c => [c.id, c.label]));
+
+// 判別ルール（上から順に評価し、最初に当てはまったものを採用）。
+// 書類の中に他の書類名が出てくることがあるため順番に意味がある:
+//   別表一には添付書類欄に「事業概況」「勘定科目内訳明細書」「貸借対照表」、
+//   事業概況説明書には「法人税申告書」、地方税の第六号様式には「法人税」の文字が含まれる。
+// そのため、他の書類には出てこない様式の表題を先に判定する。
+const RULES = [
+  ["jushin",   /受信通知/],
+  ["dairi",    /税務代理権限証書/],
+  ["hojin",    /各事業年度の所得に係る|内国法人の分|別表一/],
+  ["chiho",    /第(六|6|二十|20)号様式|道府県民税|都民税|市町村民税|地方税/],
+  ["shohi",    /消費税及び地方消費税の.{0,6}申告書|消費税の.{0,6}申告書/],
+  ["gaikyo",   /事業概況/],
+  ["uchiwake", /勘定科目内訳|内訳明細書/],
+  ["kessan",   /決算報告書|決算書|貸借対照表|損益計算書|株主資本等変動計算書/],
+  ["uchiwake", /内訳書/],
+  ["genka",    /減価償却|償却資産|固定資産台帳/],
+  ["shohi",    /消費税/],
+  ["hojin",    /法人税|別表/],
+];
+
+function normalize(s) {
+  return (s || "").normalize("NFKC").replace(/\s+/g, "");
+}
+function classify(text) {
+  const t = normalize(text);
+  if (!t) return null;
+  for (const [id, re] of RULES) if (re.test(t)) return id;
+  return null;
+}
+
+let files = [];   // { key, name, bytes, pages, category, source }
+let seq = 0;
+
+const $ = id => document.getElementById(id);
+const statusEl = $("status");
+function setStatus(msg, kind = "") { statusEl.textContent = msg; statusEl.className = kind; }
+
+async function readFirstPageText(bytes) {
+  // pdf.js はバッファを worker に渡して使えなくするので複製して渡す
+  const doc = await pdfjsLib.getDocument({
+    data: bytes.slice(),
+    cMapUrl: PDFJS_BASE + "cmaps/",
+    cMapPacked: true,
+    standardFontDataUrl: PDFJS_BASE + "standard_fonts/",
+  }).promise;
+  let text = "";
+  // 1ページ目に文字が無い（表紙が画像など）ときだけ2ページ目まで見る
+  for (let i = 1; i <= Math.min(2, doc.numPages) && !normalize(text); i++) {
+    const page = await doc.getPage(i);
+    const content = await page.getTextContent();
+    text = content.items.map(it => it.str).join(" ");
+  }
+  const pages = doc.numPages;
+  await doc.destroy();
+  return { text, pages };
+}
+
+async function addFiles(list) {
+  const pdfs = [...list].filter(f => /\.pdf$/i.test(f.name) || f.type === "application/pdf");
+  if (!pdfs.length) { setStatus("PDFファイルを選んでください。", "error"); return; }
+  setStatus(`${pdfs.length}件のファイルを読み込み中…`);
+  const failed = [];
+  pdfs.sort(naturalCompare);
+  for (const f of pdfs) {
+    try {
+      const bytes = new Uint8Array(await f.arrayBuffer());
+      const { text, pages } = await readFirstPageText(bytes);
+      let category = classify(text), source = "内容";
+      if (!category) { category = classify(f.name); source = "ファイル名"; }
+      if (!category) source = "";
+      // 同じファイルをもう一度追加したときは置き換える
+      files = files.filter(x => !(x.name === f.name && x.size === f.size));
+      files.push({ key: ++seq, name: f.name, size: f.size, bytes, pages, category, source });
+    } catch (e) {
+      console.error(f.name, e && e.message);
+      failed.push(f.name);
+    }
+  }
+  if (!$("outName").dataset.edited) $("outName").value = defaultOutName();
+  render();
+  if (failed.length) setStatus(`読み込めなかったファイル: ${failed.join("、")}（パスワード付きや破損したPDFの可能性があります）`, "error");
+  else setStatus("");
+}
+
+function naturalCompare(a, b) {
+  return a.name.localeCompare(b.name, "ja", { numeric: true });
+}
+function filesOf(cat) {
+  return files.filter(f => f.category === cat);
+}
+
+// 同じ種類のファイルが複数あるときの並び替え（files 配列内での順番を入れ替える）
+function move(key, dir) {
+  const f = files.find(x => x.key === key);
+  const group = filesOf(f.category);
+  const i = group.indexOf(f), j = i + dir;
+  if (j < 0 || j >= group.length) return;
+  const a = files.indexOf(group[i]), b = files.indexOf(group[j]);
+  [files[a], files[b]] = [files[b], files[a]];
+  render();
+}
+
+function fileRow(f, inGroup) {
+  const row = document.createElement("div");
+  row.className = "file";
+
+  const name = document.createElement("span");
+  name.className = "name";
+  name.textContent = f.name;
+
+  const meta = document.createElement("span");
+  meta.className = "meta";
+  meta.textContent = `${f.pages}ページ` + (f.source ? `・${f.source}で判別` : "");
+
+  const sel = document.createElement("select");
+  sel.setAttribute("aria-label", `${f.name} の種類`);
+  sel.add(new Option("（結合しない）", ""));
+  for (const c of CATEGORIES) sel.add(new Option(c.label, c.id));
+  sel.value = f.category || "";
+  sel.onchange = () => {
+    f.category = sel.value || null;
+    f.source = sel.value ? "手動" : "";
+    // 移動先の種類の末尾に来るよう配列の最後へ回す
+    files = files.filter(x => x !== f).concat(f);
+    render();
+  };
+
+  row.append(name, meta, sel);
+
+  if (inGroup) {
+    const group = filesOf(f.category);
+    if (group.length > 1) {
+      const up = document.createElement("button");
+      up.textContent = "↑"; up.title = "前へ"; up.disabled = group[0] === f;
+      up.onclick = () => move(f.key, -1);
+      const down = document.createElement("button");
+      down.textContent = "↓"; down.title = "後ろへ"; down.disabled = group[group.length - 1] === f;
+      down.onclick = () => move(f.key, 1);
+      row.append(up, down);
+    }
+  }
+  const del = document.createElement("button");
+  del.textContent = "削除"; del.title = "一覧から外す";
+  del.onclick = () => { files = files.filter(x => x !== f); render(); };
+  row.append(del);
+  return row;
+}
+
+function render() {
+  const slots = $("slots");
+  slots.replaceChildren();
+  let n = 0;
+  for (const c of CATEGORIES) {
+    const group = filesOf(c.id);
+    const li = document.createElement("li");
+    li.className = "slot" + (group.length ? "" : " empty");
+    const no = document.createElement("span");
+    no.className = "no";
+    no.textContent = group.length ? ++n : "–";
+    const body = document.createElement("div");
+    body.className = "body";
+    const label = document.createElement("span");
+    label.className = "label";
+    label.textContent = c.label;
+    body.append(label);
+    if (!group.length) {
+      const skip = document.createElement("span");
+      skip.className = "skip";
+      skip.textContent = "未追加のためスキップ";
+      body.append(skip);
+    }
+    for (const f of group) body.append(fileRow(f, true));
+    li.append(no, body);
+    slots.append(li);
+  }
+
+  const un = files.filter(f => !f.category);
+  $("unclassifiedCard").hidden = !un.length;
+  $("unclassified").replaceChildren(...un.map(f => fileRow(f, false)));
+
+  const total = files.filter(f => f.category).reduce((s, f) => s + f.pages, 0);
+  const btn = $("merge");
+  btn.disabled = total === 0;
+  btn.textContent = total ? `結合してダウンロード（${total}ページ）` : "結合してダウンロード";
+}
+
+// 例: 「合同会社〇〇_令和8年8月期_法人税申告書.pdf」などの共通部分から既定のファイル名を作る
+function defaultOutName() {
+  const names = files.map(f => f.name.replace(/\.pdf$/i, ""));
+  if (!names.length) return "";
+  let prefix = names[0];
+  for (const s of names) while (!s.startsWith(prefix)) prefix = prefix.slice(0, -1);
+  prefix = prefix.replace(/[\s_\-－・()（）]+$/, "");
+  return (prefix ? prefix + "_" : "") + "申告書一式.pdf";
+}
+
+async function merge() {
+  const ordered = CATEGORIES.flatMap(c => filesOf(c.id));
+  if (!ordered.length) return;
+  const btn = $("merge");
+  btn.disabled = true;
+  setStatus("結合中…");
+  try {
+    const out = await PDFLib.PDFDocument.create();
+    for (const f of ordered) {
+      const src = await PDFLib.PDFDocument.load(f.bytes, { ignoreEncryption: true });
+      const pages = await out.copyPages(src, src.getPageIndices());
+      pages.forEach(p => out.addPage(p));
+    }
+    const bytes = await out.save();
+    let name = $("outName").value.trim() || "申告書一式.pdf";
+    if (!/\.pdf$/i.test(name)) name += ".pdf";
+    const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+    const a = document.createElement("a");
+    a.href = url; a.download = name;
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    const used = CATEGORIES.filter(c => filesOf(c.id).length).map(c => c.label);
+    setStatus(`${name} を保存しました（${out.getPageCount()}ページ: ${used.join(" → ")}）`, "ok");
+  } catch (e) {
+    console.error(e);
+    setStatus("結合に失敗しました: " + e.message, "error");
+  } finally {
+    render();
+  }
+}
+
+const drop = $("drop");
+$("picker").onchange = e => { addFiles(e.target.files); e.target.value = ""; };
+drop.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("over"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", e => { e.preventDefault(); drop.classList.remove("over"); addFiles(e.dataTransfer.files); });
+// 枠の外に落としたときにブラウザがPDFを開いてしまわないようにする
+window.addEventListener("dragover", e => e.preventDefault());
+window.addEventListener("drop", e => e.preventDefault());
+$("merge").onclick = merge;
+$("clear").onclick = () => { files = []; $("outName").value = ""; delete $("outName").dataset.edited; setStatus(""); render(); };
+$("outName").oninput = e => { e.target.dataset.edited = "1"; };
+render();
+</script>
+</body>
+</html>
