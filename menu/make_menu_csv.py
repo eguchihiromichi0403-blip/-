@@ -97,10 +97,46 @@ MENU = [
     ]),
 ]
 
+# エアレジに登録するカテゴリー（メニュー表の見出し → カテゴリー）
+AIRREGI_CATEGORY = {
+    "ランチ": "ランチ",
+    "料理長おまかせディナー": "ディナー",
+    "ディナー定食膳": "ディナー",
+    "特選料理": "ディナー",
+    "飲茶・点心": "ディナー",
+    "麺類": "ディナー",
+    "飯類": "ディナー",
+    "ビール": "アルコール",
+    "ハイボール": "アルコール",
+    "グラス": "アルコール",
+    "ウイスキー・紹興酒": "アルコール",
+    "ワイン": "アルコール",
+    "ソフトドリンク": "ソフトドリンク",
+}
+# 見出しと違うカテゴリーにする商品
+CATEGORY_OVERRIDE = {
+    "アサヒゼロ（ノンアルコール）": "ソフトドリンク",
+}
+
+# エアレジ管理画面でカテゴリーを作成したあと、そのカテゴリーIDを入れる
+CATEGORY_IDS = {
+    "アルコール": "",
+    "ソフトドリンク": "",
+    "ディナー": "",
+    "ランチ": "",
+}
+
+
+def airregi_category(section, name):
+    return CATEGORY_OVERRIDE.get(name, AIRREGI_CATEGORY[section])
+
+
+HEADER = ["カテゴリー"] + HEADER
+HEADER[1] = "メニュー表の見出し"
 rows = [HEADER]
-for category, items in MENU:
+for section, items in MENU:
     for name, price, note in items:
-        rows.append([category, name, price, "10%", "税込", note])
+        rows.append([airregi_category(section, name), section, name, price, "10%", "税込", note])
 
 out_dir = Path(__file__).parent
 
@@ -114,9 +150,10 @@ with open(out_dir / "airregi_template.csv", encoding="cp932", newline="") as f:
 version_row, columns = template[0], template[1]
 
 
-def airregi_row(name, price):
+def airregi_row(name, price, category_id):
     # 商品IDを空にすると新規登録になる
     values = {
+        "カテゴリーID": category_id,
         "【必須】商品名": name,
         "商品名（レシート用）": name,
         "商品名（商品入力用）": name,
@@ -137,10 +174,11 @@ def airregi_row(name, price):
 
 
 import_rows = [version_row, columns]
-for category, items in MENU:
+for section, items in MENU:
     for name, price, note in items:
         assert len(name) <= 49, name
-        import_rows.append(airregi_row(name, price))
+        category_id = CATEGORY_IDS[airregi_category(section, name)]
+        import_rows.append(airregi_row(name, price, category_id))
 
 with open(out_dir / "airregi_menu.csv", "w", encoding="cp932", newline="") as f:
     csv.writer(f, quoting=csv.QUOTE_ALL, lineterminator="\r\n").writerows(import_rows)
