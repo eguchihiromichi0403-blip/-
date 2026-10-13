@@ -103,8 +103,46 @@ for category, items in MENU:
         rows.append([category, name, price, "10%", "税込", note])
 
 out_dir = Path(__file__).parent
-for filename, encoding in [("airregi_menu.csv", "cp932"), ("airregi_menu_utf8.csv", "utf-8-sig")]:
-    with open(out_dir / filename, "w", encoding=encoding, newline="") as f:
-        csv.writer(f, lineterminator="\r\n").writerows(rows)
+
+# 確認用の一覧（UTF-8、Excelで開いても文字化けしない）
+with open(out_dir / "airregi_menu_utf8.csv", "w", encoding="utf-8-sig", newline="") as f:
+    csv.writer(f, lineterminator="\r\n").writerows(rows)
+
+# エアレジ取り込み用：管理画面からダウンロードしたひな型の1〜2行目をそのまま使う
+with open(out_dir / "airregi_template.csv", encoding="cp932", newline="") as f:
+    template = list(csv.reader(f))
+version_row, columns = template[0], template[1]
+
+
+def airregi_row(name, price):
+    # 商品IDを空にすると新規登録になる
+    values = {
+        "【必須】商品名": name,
+        "商品名（レシート用）": name,
+        "商品名（商品入力用）": name,
+        "税設定": "内税",
+        "適用税率": "標準税率",
+        "価格設定": "通常",
+        "【必須】価格": str(price),
+        "ポイント付与対象": "対象",
+        "表示/非表示": "表示",
+        "レシート印字設定": "印字する",
+        "登録番号印字設定": "印字する",
+    }
+    row = []
+    for column in columns:
+        matches = [v for k, v in values.items() if column.startswith(k)]
+        row.append(matches[0] if matches else "")
+    return row
+
+
+import_rows = [version_row, columns]
+for category, items in MENU:
+    for name, price, note in items:
+        assert len(name) <= 49, name
+        import_rows.append(airregi_row(name, price))
+
+with open(out_dir / "airregi_menu.csv", "w", encoding="cp932", newline="") as f:
+    csv.writer(f, quoting=csv.QUOTE_ALL, lineterminator="\r\n").writerows(import_rows)
 
 print(f"{len(rows) - 1} items")
